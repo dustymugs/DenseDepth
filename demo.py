@@ -141,6 +141,11 @@ class Window(QtWidgets.QWidget):
         self.outputViewer.setPixmap(QtGui.QPixmap.fromImage(np_to_qimage(coloredDepth)))
         
     def loadModel(self):        
+
+        if self.model is not None:
+            print('Model already loaded.')
+            return
+
         QtGui.QGuiApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         tic()  
         self.model = load_model()
@@ -166,6 +171,7 @@ class Window(QtWidgets.QWidget):
     def loadImageFile(self):
         self.capture = None
         filename = QtWidgets.QFileDialog.getOpenFileName(None, 'Select image', '', self.tr('Image files (*.jpg *.png)'))[0]
+        self.glWidget.image_path = os.path.abspath(filename)
         img = QtGui.QImage(filename).scaledToHeight(rgb_height)
         xstart = 0
         if img.width() > rgb_width: xstart = (img.width() - rgb_width) // 2
@@ -198,12 +204,15 @@ class Window(QtWidgets.QWidget):
         self.glWidget.rgb = resize((rgb8[:,:,:3]/255)[:,:,::-1], (rgb_height, rgb_width), order=1, anti_aliasing=True)
 
         if self.model: 
+            print('running model')
             with graph.as_default():
-                depth = (1000 / self.model.predict( np.expand_dims(self.glWidget.rgb, axis=0)  )) / 1000
+                predictions = self.model.predict(np.expand_dims(self.glWidget.rgb, axis=0))
+                depth = (1000 / predictions) / 1000 # WTF
             coloredDepth = (plasma(depth[0,:,:,0])[:,:,:3] * 255).astype('uint8')
             self.outputViewer.setPixmap(QtGui.QPixmap.fromImage(np_to_qimage(coloredDepth)))
             self.glWidget.depth = depth[0,:,:,0]
         else:
+            print('where is my model')
             self.glWidget.depth = 0.5 + np.zeros((rgb_height//2, rgb_width//2, 1))
             
         self.glWidget.updateRGBD()
@@ -228,7 +237,10 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.trolltechPurple = QtGui.QColor.fromCmykF(0.39, 0.39, 0.0, 0.0)
 
         # Precompute for world coordinates 
-        self.xx, self.yy = self.worldCoords(width=rgb_width//2, height=rgb_height//2)
+        self.xx, self.yy = self.worldCoords(
+            width=rgb_width//2,
+            height=rgb_height//2
+        )
 
         # Load test frame from disk
         self.rgb = np.load('demo_rgb.npy')
@@ -327,24 +339,38 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.drawObject()
 
     def worldCoords(self, width, height):
+        # specific to camera taking training data
+        # FOV of the XBox Kinect v1
         hfov_degrees, vfov_degrees = 57, 43
+
         hFov = math.radians(hfov_degrees)
         vFov = math.radians(vfov_degrees)
+
+        # center x, y
         cx, cy = width/2, height/2
-        fx = width/(2*math.tan(hFov/2))
-        fy = height/(2*math.tan(vFov/2))
+        print('cx, cy', cx, cy)
+
+        # focal length
+        fx = width / (2 * math.tan(hFov / 2))
+        fy = height / (2 * math.tan(vFov / 2))
+        print('fx, fy', fx, fy)
+
         xx, yy = np.tile(range(width), height), np.repeat(range(height), width)
-        xx = (xx-cx)/fx
-        yy = (yy-cy)/fy
+        xx = (xx - cx) / fx
+        yy = (yy - cy) / fy
+
         return xx, yy
 
     def posFromDepth(self, depth):
         length = depth.shape[0] * depth.shape[1]
 
-        depth[edges(depth) > 0.3] = 1e6  # Hide depth edges       
+        #depth[edges(depth) > 0.3] = 1e6  # Hide depth edges       
+        #z = depth.reshape(length) * 10.
         z = depth.reshape(length)
 
-        return np.dstack((self.xx*z, self.yy*z, z)).reshape((length, 3))
+        pos = np.dstack((self.xx * z, self.yy * z, z)).reshape((length, 3))
+
+        return pos
 
     def createPointCloudVBOfromRGBD(self):
         # Create position and color VBOs
@@ -361,7 +387,37 @@ class GLWidget(QtOpenGL.QGLWidget):
 
         # Flatten and convert to float32
         self.pos = points.astype('float32')
-        self.col = colors.reshape(height * width, 3).astype('float32')
+        #self.col = colors.reshape(height * width, 3).astype('float32')
+        self.col = colors.astype('float32')
+
+        print(self.pos.shape)
+        print(self.col.shape)
+
+        ply_path = '{}.ply'.format(
+            os.path.splitext(self.image_path)[0]
+            if hasattr(self, 'image_path')
+            else '/tmp/wtf'
+        )
+        with open(ply_path, 'w') as fh:
+
+            fh.write('''ply
+format ascii 1.0
+element vertex {}
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+property uchar alpha
+end_header
+'''.format(len(self.pos)))
+
+            for idx, xyz in enumerate(self.pos):
+
+                x, y, z = xyz * 10.
+                r, g, b = np.round(self.col[idx] * 255).astype(int)
+                fh.write(f'{x} {y} {z} {r} {g} {b} 0\n')
 
         # Move center of scene
         self.pos = self.pos + glm.vec3(0, -0.06, -0.3)

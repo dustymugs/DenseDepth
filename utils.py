@@ -25,9 +25,14 @@ def scale_up(scale, images):
     return np.stack(scaled)
 
 def load_images(image_files):
+    rgb_size = (640, 480)
     loaded_images = []
-    for file in image_files:
-        x = np.clip(np.asarray(Image.open( file ), dtype=float) / 255, 0, 1)
+    for fn in image_files:
+        im = Image.open(fn)
+        if im.size != rgb_size:
+            print('Resizing to {}: {}'.format('x'.join(rgb_size), fn))
+            im = im.resize(rgb_size, resample=Image.LANCZOS)
+        x = np.clip(np.asarray(im, dtype=float) / 255, 0, 1)
         loaded_images.append(x)
     return np.stack(loaded_images, axis=0)
 
