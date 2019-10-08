@@ -71,7 +71,7 @@ class DenseDepthService(object):
     @keypoints_csv.setter
     def keypoints_csv(self, new_value):
 
-        if new_value is None:
+        if not new_value:
             self.keypoints_map = {}
             return
 
