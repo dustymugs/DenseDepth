@@ -6,10 +6,18 @@ import math
 import numpy as np
 import os
 import os.path as osp
-from PIL import Image
+from PIL import Image, ImageOps
 
 # Keras / TensorFlow
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '5'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import tensorflow as tf
+config = tf.ConfigProto()
+config.gpu_options.allow_growth=True
+config.gpu_options.per_process_gpu_memory_fraction = 0.2
+
+from keras.backend.tensorflow_backend import set_session
+set_session(tf.Session(config=config))
+
 from keras.models import load_model
 
 from layers import BilinearUpSampling2D
@@ -17,6 +25,8 @@ from utils import predict, load_images, display_images
 
 # specs from XBox Kinect v1
 # reference: http://wiki.ros.org/kinect_calibration/technical
+
+WIDTH, HEIGHT = 640, 480
 
 # in degrees
 hFov = 57
@@ -28,6 +38,41 @@ rhFov = math.radians(hFov)
 rvFov = math.radians(vFov)
 
 # TODO add support for KITTI
+
+def resize_image(im, size, return_info=False):
+
+    '''
+    Resize Image object to width and height while maintaining aspect ratio
+    '''
+
+    width, height = size
+    im_width, im_height = im.size
+
+    if im_width > im_height:
+        scale_factor = width / im_width
+    else:
+        scale_factor = height / im_height
+
+    im = im.resize(
+        (int(im_width * scale_factor), int(im_height * scale_factor)),
+        resample=Image.LANCZOS
+    )
+
+    delta_w = width - im.size[0]
+    delta_h = height - im.size[1]
+    padding = (
+        delta_w // 2,
+        delta_h // 2,
+        delta_w - delta_w // 2,
+        delta_h - delta_h // 2,
+    )
+    if delta_w != 0 or delta_h != 0:
+        im = ImageOps.expand(im, padding)
+
+    if not return_info:
+        return im
+    else:
+        return im, scale_factor, padding[:2]
 
 @click.command()
 @click.option('--model', default='nyu.h5', type=click.Path(), help='Trained Keras model file.')
@@ -54,7 +99,9 @@ def do_it(model, keypoints, no_tif, no_ply, image):
         coordinates are in units of pixels with (0, 0) at the upper-left corner of image
     '''
 
-    image_globs = image
+    image_globs = []
+    for i in image:
+        image_globs.extend(glob.glob(i))
 
     keypoints_map = {}
     if keypoints is not None:
@@ -64,7 +111,11 @@ def do_it(model, keypoints, no_tif, no_ply, image):
 
             for row in reader:
                 by_image = keypoints_map.setdefault(row['image'], [])
-                by_image.append((keypoint, x, y))
+                by_image.append((
+                    row['keypoint'],
+                    int(row['x']),
+                    int(row['y'])
+                ))
 
     # Input images
     images_data = None 
@@ -78,7 +129,7 @@ def do_it(model, keypoints, no_tif, no_ply, image):
         image_paths.extend(image_path)
 
         # returns (image idx, height, width, num channels)
-        image_data = load_images(image_path)
+        image_data = load_images(image_path, (WIDTH, HEIGHT))
         if images_data is None:
             images_data = image_data
         else:
@@ -103,7 +154,7 @@ def do_it(model, keypoints, no_tif, no_ply, image):
     outputs = predict(model, images_data) # returns (image idx, height, width, num channels)
 
     # output results as depth tif and point cloud ply
-    for idx, depth_data in enumerate(outputs):
+    for idx, raw_depth_data in enumerate(outputs):
 
         image_path = osp.abspath(image_paths[idx])
         image_base, image_ext = osp.splitext(image_path)
@@ -111,20 +162,27 @@ def do_it(model, keypoints, no_tif, no_ply, image):
 
         src = Image.open(image_path)
 
-        # save depth image to tiff
+        raw_depth = Image.fromarray(
+            np.moveaxis(raw_depth_data, -1, 0)[0],
+            mode='F'
+        )
+        im = resize_image(raw_depth, src.size)
+
+        # save depth image to tiff at same resolution as source image
         if not no_tif:
 
             print('{} => {}'.format(image_path, depth_path))
-            im = Image.fromarray(np.moveaxis(depth_data, -1, 0)[0], mode='F')
-            # resize depth image to original image
-            im = im.resize((src.width, src.height), resample=Image.LANCZOS)
             im.save(depth_path, 'TIFF')
 
-        # convert to point cloud
-        fx = src.width / (2 * math.tan(rhFov / 2))
-        fy = src.height / (2 * math.tan(rvFov / 2))
+        # only use this resized depth data below
+        depth_data = np.array(im)
 
         width, height = src.size
+        length = width * height
+
+        # convert to point cloud
+        fx = width / (2 * math.tan(rhFov / 2))
+        fy = height / (2 * math.tan(rvFov / 2))
         cx = width / 2
         cy = height / 2
 
@@ -132,7 +190,6 @@ def do_it(model, keypoints, no_tif, no_ply, image):
         xx = (xx - cx) / fx
         yy = (yy - cy) / fy
 
-        length = width * height
         z = depth_data.reshape(length)
         pos = np.dstack((xx * z, yy * z, z)).reshape((length, 3)) * scalingFactor
         color = np.array(src).reshape((length, 3))
@@ -140,7 +197,11 @@ def do_it(model, keypoints, no_tif, no_ply, image):
         image_keypoints = keypoints_map.get(image_paths[idx], [])
         if image_keypoints:
 
-            with open(..., 'w') as fh:
+            dist_path = f'{image_base}.kpdist.csv'
+
+            print('{} => {}'.format(image_path, dist_path))
+            with open(dist_path, 'w') as fh:
+
                 field_names = [
                     'from_row',
                     'from_keypoint',
@@ -155,6 +216,7 @@ def do_it(model, keypoints, no_tif, no_ply, image):
                     'from_to_distance',
                 ]
                 writer = csv.DictWriter(fh, fieldnames=field_names)
+                writer.writeheader()
 
                 for a_idx, b_idx in itertools.combinations(
                     range(len(image_keypoints)),
@@ -173,9 +235,9 @@ def do_it(model, keypoints, no_tif, no_ply, image):
                     b_voxel = pos[b_pixel]
 
                     ab_dist = math.sqrt(
-                        math.pow(b_voxel[0] - a_voxel[0], 2) + \
-                        math.pow(b_voxel[1] - a_voxel[1], 2) + \
-                        math.pow(b_voxel[2] - a_voxel[2], 2)
+                        np.sum(
+                            np.power(b_voxel - a_voxel, 2)
+                        )
                     )
 
                     writer.writerow({
@@ -196,6 +258,7 @@ def do_it(model, keypoints, no_tif, no_ply, image):
         if not no_ply:
 
             ply_path = f'{image_base}.ply'
+            print('{} => {}'.format(image_path, ply_path))
             with open(ply_path,"w") as fh:
                 fh.write('''ply
 format ascii 1.0
