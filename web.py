@@ -34,4 +34,5 @@ def predict():
 if __name__ == '__main__':
 
     svc = DenseDepthService()
+    svc.model
     app.run(debug=False, host='0.0.0.0', port=5051)
