@@ -64,6 +64,9 @@ class DenseDepthService(object):
         assert osp.isfile(new_value)
         self._model_path = new_value
 
+        self._model = None
+        self.model # to proactively load model
+
     @property
     def keypoints_csv(self):
         return self._keypoints_csv
@@ -78,7 +81,19 @@ class DenseDepthService(object):
         assert osp.isfile(new_value)
         self._keypoints_csv = new_value
 
-        self.keypoints_map = {}
+        self._build_keypoints_map()
+
+    @property
+    def keypoints_map(self):
+        return self._keypoints_map
+
+    @keypoints_map.setter
+    def keypoints_map(self, new_value):
+        self._keypoints_map = new_value
+
+    def _build_keypoints_map(self):
+
+        keypoints_map = {}
         with open(self._keypoints_csv) as fh:
             reader = csv.DictReader(fh)
 
@@ -90,10 +105,12 @@ class DenseDepthService(object):
                     int(row['y'])
                 ))
 
+        self.keypoints_map = keypoints_map
+
     @property
     def model(self):
 
-        if not hasattr(self, '_model'):
+        if getattr(self, '_model', None) is None:
 
             # Custom object needed for inference and training
             custom_objects = {
@@ -199,17 +216,17 @@ class DenseDepthService(object):
         with open(dist_path, 'w') as fh:
 
             field_names = [
-                'from_row',
                 'from_keypoint',
+                'to_keypoint',
+                'from_to_distance',
+                'from_row',
                 'from_x',
                 'from_y',
                 'from_z',
                 'to_row',
-                'to_keypoint',
                 'to_x',
                 'to_y',
                 'to_z',
-                'from_to_distance',
             ]
             writer = csv.DictWriter(fh, fieldnames=field_names)
             writer.writeheader()
