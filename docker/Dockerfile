@@ -12,7 +12,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN conda install -y scikit-image pydot && \
-    pip install PyGLM PySide2 PyQt5 PyOpenGL click ipdb Flask && \
+    pip install PyGLM PySide2 PyQt5 PyOpenGL click ipdb Flask 'keras<2.3.0' && \
     conda clean -yt
 
 # purely for running GUI apps that require not being root

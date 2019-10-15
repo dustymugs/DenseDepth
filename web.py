@@ -1,13 +1,20 @@
 from flask import Flask, render_template, request, jsonify
 from threading import Lock
+import time
 from werkzeug.utils import secure_filename
 
 from predict import DenseDepthService
 
 app = Flask(__name__)
 
-svc = None
+prewarm_image = '/projects/Beef Industry/References/Black Angus/2pic33488.jpg'
 svc_lock = Lock()
+with svc_lock:
+    svc = DenseDepthService(
+        no_tif=True,
+        no_ply=True,
+        prewarm_image=prewarm_image
+    )
 
 @app.route('/', methods=['POST'])
 def predict():
@@ -46,6 +53,8 @@ def predict():
     }
     '''
 
+    start = time.time()
+
     req = request.get_json()
     keypoints = req['keypoints']
     image_paths = req['image_paths']
@@ -65,6 +74,7 @@ def predict():
         svc.keypoints_map = keypoints_map
         paths = svc.predict(image_paths)
 
+    print(time.time() - start)
     return jsonify({
         image_path: {
             'depth_image': tif_path,
@@ -76,5 +86,4 @@ def predict():
 
 if __name__ == '__main__':
 
-    svc = DenseDepthService()
     app.run(debug=False, host='0.0.0.0', port=5051)

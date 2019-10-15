@@ -47,12 +47,22 @@ class DenseDepthService(object):
         keypoints_csv=None,
         no_tif=False,
         no_ply=False,
+        prewarm_image=None
     ):
 
         self.model_path = model_path
         self.keypoints_csv = keypoints_csv
         self.no_tif = no_tif
         self.no_ply = no_ply
+
+        self._prewarm(prewarm_image)
+
+    def _prewarm(self, prewarm_image=None):
+
+        if prewarm_image is None:
+            return
+
+        self.predict([prewarm_image])
 
     @property
     def model_path(self):
@@ -124,6 +134,8 @@ class DenseDepthService(object):
                 custom_objects=custom_objects,
                 compile=False
             )
+            # https://stackoverflow.com/a/43393252
+            self._model._make_predict_function()
 
         return self._model
 
@@ -198,13 +210,16 @@ class DenseDepthService(object):
         if self.no_tif:
             return None
 
-        print('{} => {}'.format(image_path, depth_path))
         depth_path = '{}.depth.tif'.format(self._get_path_base(image_path))
+        print('{} => {}'.format(image_path, depth_path))
         im.save(depth_path, 'TIFF')
 
         return depth_path
 
-    def _measure_keypoints(self, pos, image_path):
+    def _measure_keypoints(self, pos, image_path, size):
+
+        width, height = size
+        length = width * height
 
         image_keypoints = self.keypoints_map.get(image_path, [])
         if not image_keypoints:
@@ -324,7 +339,7 @@ end_header
         )).reshape((length, 3)) * self.scaling_factor
         color = np.array(src).reshape((length, 3))
 
-        dist_path = self._measure_keypoints(pos, image_path)
+        dist_path = self._measure_keypoints(pos, image_path, src.size)
         ply_path = self._make_ply(pos, color, image_path)
 
         return dist_path, ply_path
